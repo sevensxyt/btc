@@ -3,12 +3,15 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use sha256::digest;
 
-use crate::U256;
+use crate::{
+    U256,
+    error::{BtcError, Result},
+};
 
 #[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq, Eq, Hash)]
 pub struct Hash(U256);
 impl Hash {
-    pub fn hash<T: serde::Serialize>(data: &T) -> Self {
+    pub fn hash<T: serde::Serialize>(data: &T) -> Result<Self> {
         let mut serialized: Vec<u8> = vec![];
 
         if let Err(e) = ciborium::into_writer(data, &mut serialized) {
@@ -16,10 +19,16 @@ impl Hash {
         }
 
         let hash = digest(&serialized);
-        let hash_bytes = hex::decode(hash).unwrap();
-        let hash_array: [u8; 32] = hash_bytes.as_slice().try_into().unwrap();
+        let Ok(hash_bytes) = hex::decode(hash) else {
+            return Err(BtcError::InvalidHash);
+        };
 
-        Hash(U256::from_big_endian(&hash_array))
+        let hash_array: [u8; 32] = hash_bytes
+            .as_slice()
+            .try_into()
+            .map_err(|_| BtcError::InvalidHash)?;
+
+        Ok(Hash(U256::from_big_endian(&hash_array)))
     }
 
     pub fn matches_target(&self, target: U256) -> bool {

@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct Signature(pub ECDSASignature<Secp256k1>);
 impl Signature {
     pub fn sign_output(output_hash: &Hash, private_key: &mut PrivateKey) -> Self {
-        let mut signing_key = private_key.0.clone();
-        let signature = signing_key.sign(&output_hash.as_bytes());
+        let signature = private_key.0.sign(&output_hash.as_bytes());
         Signature(signature)
     }
 

@@ -26,8 +26,8 @@ impl Blockchain {
         }
     }
 
-    pub fn block_height(&self) -> ! {
-        unimplemented!()
+    pub fn block_height(&self) -> u64 {
+        self.blocks.len() as u64
     }
 
     pub fn add_block(&mut self, block: Block) -> Result<()> {
@@ -37,18 +37,19 @@ impl Blockchain {
                 return Err(BtcError::InvalidBlock);
             }
         } else {
-            let prev_block = self.blocks.last().unwrap();
-            if block.header.prev_block_hash != prev_block.hash() {
+            let prev_block = self.blocks.last().ok_or(BtcError::InvalidBlock)?;
+            if block.header.prev_block_hash != prev_block.hash()? {
                 println!("prev hash does not match");
                 return Err(BtcError::InvalidHash);
             }
 
-            if !block.header.hash().matches_target(block.header.target) {
+            if !block.header.hash()?.matches_target(block.header.target) {
                 println!("target does not match");
                 return Err(BtcError::InvalidBlock);
             }
 
-            let merkle_root = MerkleRoot::calculate(&block.transactions).unwrap();
+            let merkle_root =
+                MerkleRoot::calculate(&block.transactions).ok_or(BtcError::InvalidMerkleRoot)?;
             if merkle_root != block.header.merkle_root {
                 println!("invalid merkle root");
                 return Err(BtcError::InvalidMerkleRoot);
@@ -58,14 +59,14 @@ impl Blockchain {
                 return Err(BtcError::InvalidBlock);
             }
 
-            // block.verify_transactions(self.block_height(), &self.utxos);
+            block.verify_transactions(self.block_height(), &self.utxos)?;
         }
 
         self.blocks.push(block);
         Ok(())
     }
 
-    pub fn rebuild_utxos(&mut self) {
+    pub fn rebuild_utxos(&mut self) -> Result<()> {
         for block in &self.blocks {
             for transaction in &block.transactions {
                 for input in &transaction.inputs {
@@ -73,10 +74,11 @@ impl Blockchain {
                 }
 
                 for output in &transaction.outputs {
-                    self.utxos.insert(transaction.hash(), output.clone());
+                    self.utxos.insert(transaction.hash()?, output.clone());
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -100,7 +102,7 @@ impl Block {
         }
     }
 
-    pub fn hash(&self) -> Hash {
+    pub fn hash(&self) -> Result<Hash> {
         Hash::hash(self)
     }
 
@@ -163,11 +165,7 @@ impl Block {
             return Err(BtcError::InvalidBlock);
         };
 
-        if coinbase_transaction.inputs.len() == 0 {
-            return Err(BtcError::InvalidTransaction);
-        }
-
-        if coinbase_transaction.outputs.len() == 0 {
+        if coinbase_transaction.inputs.is_empty() || coinbase_transaction.outputs.is_empty() {
             return Err(BtcError::InvalidTransaction);
         }
 
@@ -189,7 +187,36 @@ impl Block {
     }
 
     fn calculate_miner_fees(&self, utxos: &HashMap<Hash, TransactionOutput>) -> Result<u64> {
-        unimplemented!()
+        let mut inputs: HashMap<Hash, TransactionOutput> = HashMap::new();
+        let mut outputs: HashMap<Hash, TransactionOutput> = HashMap::new();
+
+        for transction in self.transactions.iter().skip(1) {
+            for input in &transction.inputs {
+                let Some(prev_output) = utxos.get(&input.prev_transaction_output_hash) else {
+                    return Err(BtcError::InvalidTransaction);
+                };
+
+                if inputs.contains_key(&input.prev_transaction_output_hash) {
+                    return Err(BtcError::InvalidTransaction);
+                }
+
+                inputs.insert(input.prev_transaction_output_hash, prev_output.clone());
+            }
+
+            for output in &transction.outputs {
+                let hash = output.hash()?;
+                if outputs.contains_key(&hash) {
+                    return Err(BtcError::InvalidTransaction);
+                }
+
+                outputs.insert(hash, output.clone());
+            }
+        }
+
+        let input_value: u64 = inputs.values().map(|input| input.value).sum();
+        let output_value: u64 = outputs.values().map(|output| output.value).sum();
+
+        Ok(input_value - output_value)
     }
 }
 
@@ -219,7 +246,7 @@ impl BlockHeader {
         }
     }
 
-    pub fn hash(&self) -> Hash {
+    pub fn hash(&self) -> Result<Hash> {
         Hash::hash(self)
     }
 }
@@ -244,7 +271,7 @@ pub struct TransactionOutput {
 }
 
 impl TransactionOutput {
-    pub fn hash(&self) -> Hash {
+    pub fn hash(&self) -> Result<Hash> {
         Hash::hash(self)
     }
 }
@@ -254,7 +281,7 @@ impl Transaction {
         Self { inputs, outputs }
     }
 
-    pub fn hash(&self) -> Hash {
+    pub fn hash(&self) -> Result<Hash> {
         Hash::hash(self)
     }
 }
