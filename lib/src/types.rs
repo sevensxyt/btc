@@ -309,6 +309,28 @@ impl BlockHeader {
     pub fn hash(&self) -> Result<Hash> {
         Hash::hash(self)
     }
+
+    pub fn mine(&mut self, steps: usize) -> Result<bool> {
+        if self.hash()?.matches_target(self.target) {
+            return Ok(true);
+        }
+
+        for _ in 0..steps {
+            if let Some(nonce) = self.nonce.checked_add(1) {
+                self.nonce = nonce
+            } else {
+                // reset nonce and timestamp if nonce overflows, also causes hash of header ot change
+                self.nonce = 0;
+                self.timestamp = Utc::now()
+            }
+
+            if self.hash()?.matches_target(self.target) {
+                return Ok(true);
+            }
+        }
+
+        Ok(true)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
