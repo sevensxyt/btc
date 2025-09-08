@@ -28,7 +28,7 @@ impl Hash {
             .try_into()
             .map_err(|_| BtcError::InvalidHash)?;
 
-        Ok(Hash(U256::from_big_endian(&hash_array)))
+        Ok(Hash(U256::from_little_endian(&hash_array)))
     }
 
     pub fn matches_target(&self, target: U256) -> bool {

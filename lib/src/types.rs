@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -15,6 +16,7 @@ use crate::{
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Blockchain {
     pub utxos: HashMap<Hash, TransactionOutput>,
+    pub target: U256,
     pub blocks: Vec<Block>,
 }
 
@@ -23,6 +25,7 @@ impl Blockchain {
         Self {
             utxos: HashMap::new(),
             blocks: vec![],
+            target: crate::MIN_TARGET,
         }
     }
 
@@ -62,23 +65,73 @@ impl Blockchain {
             block.verify_transactions(self.block_height(), &self.utxos)?;
         }
 
+        let block_transactions: HashSet<_> = block
+            .transactions
+            .iter()
+            .map(|transaction| transaction.hash())
+            .collect::<Result<HashSet<_>>>()?;
+
+        // self.mempool.retain(|(_, transaction)| {
+        //     !block_transactions.contains(&tx.hash())
+        // });
+        self.try_adjust_target();
         self.blocks.push(block);
+
         Ok(())
     }
 
     pub fn rebuild_utxos(&mut self) -> Result<()> {
         for block in &self.blocks {
             for transaction in &block.transactions {
+                // old utxos have been spent
                 for input in &transaction.inputs {
                     self.utxos.remove(&input.prev_transaction_output_hash);
                 }
 
+                // create new utxos
                 for output in &transaction.outputs {
                     self.utxos.insert(transaction.hash()?, output.clone());
                 }
             }
         }
         Ok(())
+    }
+
+    fn try_adjust_target(&mut self) {
+        // let N = block count interval to update difficulty
+        // return early if N blocks have not passed
+        if self.blocks.is_empty() {
+            return;
+        }
+
+        if self.blocks.len() % crate::DIFFICULTY_UPDATE_INTERVAL as usize != 0 {
+            return;
+        }
+
+        let start_time = self.blocks
+            [self.blocks.len() - crate::DIFFICULTY_UPDATE_INTERVAL as usize]
+            .header
+            .timestamp;
+        let end_time = self.blocks.last().unwrap().header.timestamp;
+        let time_diff = (end_time - start_time).num_seconds();
+
+        // target_seconds represents the ideal duration to mine N blocks
+        let target_seconds = crate::IDEAL_BLOCK_TIME * crate::DIFFICULTY_UPDATE_INTERVAL;
+        let target = BigDecimal::parse_bytes(self.target.to_string().as_bytes(), 10)
+            .expect("This shouldn't happen");
+        // if time_diff is shorter than expected, mining is too fast, reduce target to make more difficult
+        // and vice versa
+        let new_target = target * (BigDecimal::from(time_diff) / BigDecimal::from(target_seconds));
+        let new_target_str = new_target
+            .to_string()
+            .split(".")
+            .next()
+            .expect("uh oh")
+            .to_string();
+        let new_target = U256::from_str_radix(&new_target_str, 10).expect("uh oh");
+        let new_target = new_target.clamp(self.target / 4, self.target * 4);
+
+        self.target = new_target.min(crate::MIN_TARGET);
     }
 }
 
@@ -124,10 +177,12 @@ impl Block {
                 .inputs
                 .iter()
                 .map(|input| {
+                    // error if input does not come from some previous utxo
                     let Some(prev_output) = utxos.get(&input.prev_transaction_output_hash) else {
                         return Err(BtcError::InvalidTransaction);
                     };
 
+                    // error on double spend
                     if inputs.contains_key(&input.prev_transaction_output_hash) {
                         return Err(BtcError::InvalidTransaction);
                     }
@@ -170,9 +225,7 @@ impl Block {
         }
 
         let miner_fees = self.calculate_miner_fees(utxos)?;
-        let block_reward = crate::INITIAL_REWARD * 10u64.pow(8)
-            / 2u64.pow((predicted_block_height / crate::HALVING_INTERVAL) as u32);
-
+        let block_reward = self.calcualte_block_reward(predicted_block_height);
         let total_coinbase_outputs: u64 = coinbase_transaction
             .outputs
             .iter()
@@ -184,6 +237,13 @@ impl Block {
         }
 
         Ok(())
+    }
+
+    fn calcualte_block_reward(&self, predicted_block_height: u64) -> u64 {
+        // * 10 ^ 8 converts BTC to satoshies
+        crate::INITIAL_REWARD * 10u64.pow(8)
+        // block rewards halve on every halving interval
+            / 2u64.pow((predicted_block_height / crate::HALVING_INTERVAL) as u32)
     }
 
     fn calculate_miner_fees(&self, utxos: &HashMap<Hash, TransactionOutput>) -> Result<u64> {
