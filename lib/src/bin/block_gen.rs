@@ -5,15 +5,16 @@ use btclib::{
     util::{MerkleRoot, Saveable},
 };
 use chrono::Utc;
-use std::env::{self};
+use std::{
+    env::{self},
+    process::exit,
+};
 use uuid::Uuid;
 
 fn main() {
-    let path = if let Some(arg) = env::args().nth(1) {
-        arg
-    } else {
-        println!("Usage: block_print <block_file>");
-        std::process::exit(1);
+    let Some(path) = env::args().nth(1) else {
+        println!("Usage: block_gen <block_file>");
+        exit(1);
     };
 
     let private_key = PrivateKey::new_key();

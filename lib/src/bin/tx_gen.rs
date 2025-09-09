@@ -3,15 +3,13 @@ use btclib::{
     types::{Transaction, TransactionOutput},
     util::Saveable,
 };
-use std::env;
+use std::{env, process::exit};
 use uuid::Uuid;
 
 fn main() {
-    let path = if let Some(arg) = env::args().nth(1) {
-        arg
-    } else {
+    let Some(path) = env::args().nth(1) else {
         println!("Usage: tx_gen <tx_file>");
-        std::process::exit(1);
+        exit(1);
     };
 
     let private_key = PrivateKey::new_key();

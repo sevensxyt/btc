@@ -1,16 +1,15 @@
 use btclib::{types::Transaction, util::Saveable};
-use std::{env, fs::File};
+use std::{env, fs::File, process::exit};
 
 fn main() {
-    let path = if let Some(arg) = env::args().nth(1) {
-        arg
-    } else {
-        println!("Usage: tx_print <block_file>");
-        std::process::exit(1);
+    let Some(path) = env::args().nth(1) else {
+        println!("Usage: tx_print <tx_file>");
+        exit(1);
     };
 
     if let Ok(file) = File::open(path) {
-        let block = Transaction::load(file).expect("failed to load block from file");
-        println!("{block:#?}");
+        let transaction = Transaction::load(file).expect("failed to load transaction from file");
+        println!("{transaction:#?}");
+        exit(1);
     };
 }
