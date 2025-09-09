@@ -13,11 +13,15 @@ use crate::{
     util::MerkleRoot,
 };
 
+const UNEXPECTED_BUG: &str = "uh oh";
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Blockchain {
-    pub utxos: HashMap<Hash, TransactionOutput>,
-    pub target: U256,
-    pub blocks: Vec<Block>,
+    utxos: HashMap<Hash, (bool, TransactionOutput)>,
+    target: U256,
+    blocks: Vec<Block>,
+    #[serde(default, skip_serializing)]
+    mempool: Vec<Transaction>,
 }
 
 impl Blockchain {
@@ -25,8 +29,25 @@ impl Blockchain {
         Self {
             utxos: HashMap::new(),
             blocks: vec![],
+            mempool: vec![],
             target: crate::MIN_TARGET,
         }
+    }
+
+    pub fn utxos(&self) -> &HashMap<Hash, (bool, TransactionOutput)> {
+        &self.utxos
+    }
+
+    pub fn target(&self) -> U256 {
+        self.target
+    }
+
+    pub fn blocks(&self) -> impl Iterator<Item = &Block> {
+        self.blocks.iter()
+    }
+
+    pub fn mempool(&self) -> &[Transaction] {
+        &self.mempool
     }
 
     pub fn block_height(&self) -> u64 {
@@ -71,9 +92,16 @@ impl Blockchain {
             .map(|transaction| transaction.hash())
             .collect::<Result<HashSet<_>>>()?;
 
-        // self.mempool.retain(|(_, transaction)| {
-        //     !block_transactions.contains(&tx.hash())
-        // });
+        // hard to use retain with the result type :(
+        let mut new_mempool: Vec<Transaction> = vec![];
+        for transaction in self.mempool() {
+            let hash = transaction.hash()?;
+            if !block_transactions.contains(&hash) {
+                new_mempool.push(transaction.clone());
+            }
+        }
+        self.mempool = new_mempool;
+
         self.try_adjust_target();
         self.blocks.push(block);
 
@@ -90,7 +118,8 @@ impl Blockchain {
 
                 // create new utxos
                 for output in &transaction.outputs {
-                    self.utxos.insert(transaction.hash()?, output.clone());
+                    self.utxos
+                        .insert(transaction.hash()?, (false, output.clone()));
                 }
             }
         }
@@ -117,8 +146,9 @@ impl Blockchain {
 
         // target_seconds represents the ideal duration to mine N blocks
         let target_seconds = crate::IDEAL_BLOCK_TIME * crate::DIFFICULTY_UPDATE_INTERVAL;
-        let target = BigDecimal::parse_bytes(self.target.to_string().as_bytes(), 10)
-            .expect("This shouldn't happen");
+        let target =
+            BigDecimal::parse_bytes(self.target.to_string().as_bytes(), 10).expect(UNEXPECTED_BUG);
+
         // if time_diff is shorter than expected, mining is too fast, reduce target to make more difficult
         // and vice versa
         let new_target = target * (BigDecimal::from(time_diff) / BigDecimal::from(target_seconds));
@@ -126,12 +156,100 @@ impl Blockchain {
             .to_string()
             .split(".")
             .next()
-            .expect("uh oh")
+            .expect(UNEXPECTED_BUG)
             .to_string();
-        let new_target = U256::from_str_radix(&new_target_str, 10).expect("uh oh");
+        let new_target = U256::from_str_radix(&new_target_str, 10).expect(UNEXPECTED_BUG);
         let new_target = new_target.clamp(self.target / 4, self.target * 4);
 
         self.target = new_target.min(crate::MIN_TARGET);
+    }
+
+    pub fn add_to_mempool(&mut self, transaction: Transaction) -> Result<()> {
+        // check transaction
+        let mut inputs = HashSet::new();
+        for input in &transaction.inputs {
+            // input must come from valid utxo output
+            if !self.utxos.contains_key(&input.prev_transaction_output_hash) {
+                return Err(BtcError::InvalidTransaction);
+            };
+
+            // check double spend
+            if inputs.contains(&input.prev_transaction_output_hash) {
+                return Err(BtcError::InvalidTransaction);
+            }
+
+            inputs.insert(input.prev_transaction_output_hash);
+        }
+
+        // when more than one mempool transaction references the same utxo, let the latest one win, and evict the previous one
+        for input in &transaction.inputs {
+            // utxo is marked as true when it is being spent my some transaction in the mempool
+            if let Some((true, _)) = self.utxos().get(&input.prev_transaction_output_hash) {
+                // Find transaction that has an output matching our input's hash
+                let referencing_transaction =
+                    self.mempool().iter().enumerate().find(|(_, transaction)| {
+                        transaction.outputs.iter().any(|output| {
+                            output
+                                .hash()
+                                .is_ok_and(|hash| hash == input.prev_transaction_output_hash)
+                        })
+                    });
+
+                if let Some((i, transaction)) = referencing_transaction {
+                    // remove the earlier transaction, mark all of its utxo outputs as unused
+                    // clone to resolve borrow checker :(
+                    for input in transaction.inputs.clone() {
+                        self.utxos
+                            .entry(input.prev_transaction_output_hash)
+                            .and_modify(|(marked, _)| *marked = false);
+                    }
+                    self.mempool.remove(i);
+                } else {
+                    self.utxos
+                        .entry(input.prev_transaction_output_hash)
+                        .and_modify(|(marked, _)| *marked = false);
+                }
+            }
+        }
+
+        let inputs: u64 = transaction
+            .inputs
+            .iter()
+            .map(|input| {
+                self.utxos
+                    .get(&input.prev_transaction_output_hash)
+                    .expect(UNEXPECTED_BUG)
+                    .1
+                    .value
+            })
+            .sum();
+        let outputs: u64 = transaction.outputs.iter().map(|output| output.value).sum();
+
+        if inputs < outputs {
+            return Err(BtcError::InvalidTransaction);
+        }
+
+        self.mempool.push(transaction);
+        self.mempool.sort_by_key(|transaction| {
+            let inputs: u64 = transaction
+                .inputs
+                .iter()
+                .map(|input| {
+                    self.utxos
+                        .get(&input.prev_transaction_output_hash)
+                        .expect(UNEXPECTED_BUG)
+                        .1
+                        .value
+                })
+                .sum();
+
+            let outputs: u64 = transaction.outputs.iter().map(|output| output.value).sum();
+
+            #[allow(clippy::let_and_return)]
+            let miner_fee = inputs - outputs;
+            miner_fee
+        });
+        Ok(())
     }
 }
 
@@ -162,7 +280,7 @@ impl Block {
     fn verify_transactions(
         &self,
         predicted_block_height: u64,
-        utxos: &HashMap<Hash, TransactionOutput>,
+        utxos: &HashMap<Hash, (bool, TransactionOutput)>,
     ) -> Result<()> {
         if self.transactions.is_empty() {
             return Err(BtcError::InvalidTransaction);
@@ -189,13 +307,13 @@ impl Block {
 
                     if !input
                         .signature
-                        .verify(&input.prev_transaction_output_hash, &prev_output.pubkey)
+                        .verify(&input.prev_transaction_output_hash, &prev_output.1.pubkey)
                     {
                         return Err(BtcError::InvalidSignature);
                     }
 
-                    inputs.insert(input.prev_transaction_output_hash, prev_output.clone());
-                    Ok(prev_output.value)
+                    inputs.insert(input.prev_transaction_output_hash, prev_output.1.clone());
+                    Ok(prev_output.1.value)
                 })
                 .collect::<Result<Vec<_>>>()?
                 .iter()
@@ -214,7 +332,7 @@ impl Block {
     fn verify_coinbase_transaction(
         &self,
         predicted_block_height: u64,
-        utxos: &HashMap<Hash, TransactionOutput>,
+        utxos: &HashMap<Hash, (bool, TransactionOutput)>,
     ) -> Result<()> {
         let Some(coinbase_transaction) = self.transactions.first() else {
             return Err(BtcError::InvalidBlock);
@@ -246,7 +364,10 @@ impl Block {
             / 2u64.pow((predicted_block_height / crate::HALVING_INTERVAL) as u32)
     }
 
-    fn calculate_miner_fees(&self, utxos: &HashMap<Hash, TransactionOutput>) -> Result<u64> {
+    fn calculate_miner_fees(
+        &self,
+        utxos: &HashMap<Hash, (bool, TransactionOutput)>,
+    ) -> Result<u64> {
         let mut inputs: HashMap<Hash, TransactionOutput> = HashMap::new();
         let mut outputs: HashMap<Hash, TransactionOutput> = HashMap::new();
 
@@ -260,7 +381,7 @@ impl Block {
                     return Err(BtcError::InvalidTransaction);
                 }
 
-                inputs.insert(input.prev_transaction_output_hash, prev_output.clone());
+                inputs.insert(input.prev_transaction_output_hash, prev_output.1.clone());
             }
 
             for output in &transction.outputs {
