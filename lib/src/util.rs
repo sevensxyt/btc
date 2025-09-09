@@ -49,9 +49,9 @@ where
     fn load<I: Read>(reader: I) -> IoResult<Self>;
     fn save<O: Write>(&self, writer: O) -> IoResult<()>;
     fn load_from_file<P: AsRef<Path>>(path: P) -> IoResult<Self> {
-        Self::load(File::open(path)?)
+        Self::load(File::open(&path)?)
     }
     fn save_to_file<P: AsRef<Path>>(&self, path: P) -> IoResult<()> {
-        self.save(File::create(path)?)
+        self.save(File::create(&path)?)
     }
 }

@@ -27,7 +27,7 @@ pub struct PublicKey(pub VerifyingKey<Secp256k1>);
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PrivateKey(#[serde(with = "signkey_serde")] pub SigningKey<Secp256k1>);
 impl PrivateKey {
-    pub fn new() -> Self {
+    pub fn new_key() -> Self {
         Self(SigningKey::random(&mut OsRng))
     }
 
@@ -38,7 +38,7 @@ impl PrivateKey {
 
 impl Default for PrivateKey {
     fn default() -> Self {
-        Self::new()
+        Self::new_key()
     }
 }
 
