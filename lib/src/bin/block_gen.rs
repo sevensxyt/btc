@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 fn main() {
     let Some(path) = env::args().nth(1) else {
-        println!("Usage: block_gen <block_file>");
+        eprintln!("Usage: block_gen <block_file>");
         exit(1);
     };
 
@@ -32,5 +32,6 @@ fn main() {
         BlockHeader::new(Utc::now(), 0, Hash::zero(), merkle_root, btclib::MIN_TARGET),
         transactions,
     );
+
     block.save_to_file(path).expect("Failed to save block");
 }

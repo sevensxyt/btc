@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 fn main() {
     let Some(path) = env::args().nth(1) else {
-        println!("Usage: tx_gen <tx_file>");
+        eprintln!("Usage: tx_gen <tx_file>");
         exit(1);
     };
 
@@ -21,6 +21,7 @@ fn main() {
             pubkey: private_key.public_key(),
         }],
     );
+
     transaction
         .save_to_file(path)
         .expect("Failed to save transaction");

@@ -6,7 +6,7 @@ use std::{
 
 fn main() {
     let Some(path) = env::args().nth(1) else {
-        println!("Usage: block_print <block_file>");
+        eprintln!("Usage: block_print <block_file>");
         std::process::exit(1);
     };
 
