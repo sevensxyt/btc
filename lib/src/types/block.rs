@@ -2,13 +2,14 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 use crate::{
     U256,
     error::{BtcError, Result},
     sha256::Hash,
     types::transaction::{Transaction, TransactionOutput},
-    util::MerkleRoot,
+    util::{MerkleRoot, Saveable},
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -150,6 +151,17 @@ impl Block {
         let output_value: u64 = outputs.values().map(|output| output.value).sum();
 
         Ok(input_value - output_value)
+    }
+}
+
+impl Saveable for Block {
+    fn load<I: std::io::Read>(reader: I) -> std::io::Result<Self> {
+        ciborium::de::from_reader(reader)
+            .map_err(|_| IoError::new(IoErrorKind::InvalidData, "Failed to deserialise block"))
+    }
+    fn save<O: std::io::Write>(&self, writer: O) -> std::io::Result<()> {
+        ciborium::ser::into_writer(self, writer)
+            .map_err(|_| IoError::new(IoErrorKind::InvalidData, "Failed to serialise block"))
     }
 }
 

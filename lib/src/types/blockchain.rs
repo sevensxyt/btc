@@ -3,13 +3,14 @@ use std::collections::{HashMap, HashSet};
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 
 use crate::{
     U256,
     error::{BtcError, Result},
     sha256::Hash,
     types::{Block, Transaction, TransactionOutput},
-    util::MerkleRoot,
+    util::{MerkleRoot, Saveable},
 };
 
 const UNEXPECTED_BUG: &str = "uh oh";
@@ -299,5 +300,16 @@ impl Blockchain {
 impl Default for Blockchain {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Saveable for Blockchain {
+    fn load<I: std::io::Read>(reader: I) -> std::io::Result<Self> {
+        ciborium::de::from_reader(reader)
+            .map_err(|_| IoError::new(IoErrorKind::InvalidData, "Failed to deserialise blockchain"))
+    }
+    fn save<O: std::io::Write>(&self, writer: O) -> std::io::Result<()> {
+        ciborium::ser::into_writer(self, writer)
+            .map_err(|_| IoError::new(IoErrorKind::InvalidData, "Failed to serialise blockchain"))
     }
 }
