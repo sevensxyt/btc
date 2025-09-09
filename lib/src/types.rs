@@ -21,7 +21,8 @@ pub struct Blockchain {
     target: U256,
     blocks: Vec<Block>,
     #[serde(default, skip_serializing)]
-    mempool: Vec<Transaction>,
+    // bitcoin's eviction policy is 72 hours, but we'll use 600 seconds here
+    mempool: Vec<(DateTime<Utc>, Transaction)>,
 }
 
 impl Blockchain {
@@ -46,7 +47,7 @@ impl Blockchain {
         self.blocks.iter()
     }
 
-    pub fn mempool(&self) -> &[Transaction] {
+    pub fn mempool(&self) -> &[(DateTime<Utc>, Transaction)] {
         &self.mempool
     }
 
@@ -93,11 +94,11 @@ impl Blockchain {
             .collect::<Result<HashSet<_>>>()?;
 
         // hard to use retain with the result type :(
-        let mut new_mempool: Vec<Transaction> = vec![];
-        for transaction in self.mempool() {
+        let mut new_mempool: Vec<(DateTime<Utc>, Transaction)> = vec![];
+        for (datetime, transaction) in self.mempool() {
             let hash = transaction.hash()?;
             if !block_transactions.contains(&hash) {
-                new_mempool.push(transaction.clone());
+                new_mempool.push((*datetime, transaction.clone()));
             }
         }
         self.mempool = new_mempool;
@@ -165,16 +166,18 @@ impl Blockchain {
     }
 
     pub fn add_to_mempool(&mut self, transaction: Transaction) -> Result<()> {
-        // check transaction
+        // validate inputs
+        // input must come from a know utxo and be unique to prevent double spends
         let mut inputs = HashSet::new();
         for input in &transaction.inputs {
-            // input must come from valid utxo output
             if !self.utxos.contains_key(&input.prev_transaction_output_hash) {
+                println!("UTXO not found");
+                dbg!(&self.utxos());
                 return Err(BtcError::InvalidTransaction);
             };
 
-            // check double spend
             if inputs.contains(&input.prev_transaction_output_hash) {
+                println!("non-unique input");
                 return Err(BtcError::InvalidTransaction);
             }
 
@@ -187,15 +190,18 @@ impl Blockchain {
             if let Some((true, _)) = self.utxos().get(&input.prev_transaction_output_hash) {
                 // Find transaction that has an output matching our input's hash
                 let referencing_transaction =
-                    self.mempool().iter().enumerate().find(|(_, transaction)| {
-                        transaction.outputs.iter().any(|output| {
-                            output
-                                .hash()
-                                .is_ok_and(|hash| hash == input.prev_transaction_output_hash)
-                        })
-                    });
+                    self.mempool()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (_, transaction))| {
+                            transaction.outputs.iter().any(|output| {
+                                output
+                                    .hash()
+                                    .is_ok_and(|hash| hash == input.prev_transaction_output_hash)
+                            })
+                        });
 
-                if let Some((i, transaction)) = referencing_transaction {
+                if let Some((i, (_, transaction))) = referencing_transaction {
                     // remove the earlier transaction, mark all of its utxo outputs as unused
                     // clone to resolve borrow checker :(
                     for input in transaction.inputs.clone() {
@@ -226,11 +232,21 @@ impl Blockchain {
         let outputs: u64 = transaction.outputs.iter().map(|output| output.value).sum();
 
         if inputs < outputs {
+            println!("inputs lower than outputs");
             return Err(BtcError::InvalidTransaction);
         }
 
-        self.mempool.push(transaction);
-        self.mempool.sort_by_key(|transaction| {
+        // mark utxos referenced by transactions as used
+        for input in &transaction.inputs {
+            self.utxos
+                .entry(input.prev_transaction_output_hash)
+                .and_modify(|(marked, _)| {
+                    *marked = true;
+                });
+        }
+
+        self.mempool.push((Utc::now(), transaction));
+        self.mempool.sort_by_key(|(_, transaction)| {
             let inputs: u64 = transaction
                 .inputs
                 .iter()
@@ -249,6 +265,34 @@ impl Blockchain {
             let miner_fee = inputs - outputs;
             miner_fee
         });
+        Ok(())
+    }
+
+    pub fn cleanup_mempool(&mut self) -> Result<()> {
+        let now = Utc::now();
+        let mut utxo_hashes_to_unmark: Vec<Hash> = vec![];
+
+        self.mempool.retain(|(datetime, transaction)| {
+            if now - datetime > chrono::Duration::seconds(crate::MAX_MEMPOOL_TRANSACTION_AGE as i64)
+            {
+                utxo_hashes_to_unmark.extend(
+                    transaction
+                        .inputs
+                        .iter()
+                        .map(|input| input.prev_transaction_output_hash),
+                );
+                false
+            } else {
+                true
+            }
+        });
+
+        for hash in utxo_hashes_to_unmark {
+            self.utxos
+                .entry(hash)
+                .and_modify(|(marked, _)| *marked = false);
+        }
+
         Ok(())
     }
 }
