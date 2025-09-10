@@ -18,6 +18,7 @@ pub const MAX_MEMPOOL_TRANSACTION_AGE: u64 = 600;
 
 pub mod crypto;
 pub mod error;
+pub mod network;
 pub mod sha256;
 pub mod types;
 pub mod util;
