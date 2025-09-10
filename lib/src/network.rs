@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Error as IoError, Read, Write};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     crypto::PublicKey,
@@ -81,6 +82,33 @@ impl Message {
 
         let mut data = vec![0u8; length];
         stream.read_exact(&mut data)?;
+
+        Ok(())
+    }
+
+    pub async fn send_async(
+        &self,
+        stream: &mut (impl AsyncWrite + Unpin),
+    ) -> Result<(), ciborium::ser::Error<IoError>> {
+        let bytes = self.encode()?;
+        let length = bytes.len() as u64;
+
+        stream.write_all(&length.to_be_bytes()).await?;
+        stream.write_all(&bytes).await?;
+
+        Ok(())
+    }
+
+    pub async fn receive_async(
+        &self,
+        stream: &mut (impl AsyncRead + Unpin),
+    ) -> Result<(), ciborium::ser::Error<IoError>> {
+        let mut length_bytes = [0u8; 8];
+        stream.read_exact(&mut length_bytes).await?;
+        let length = u64::from_be_bytes(length_bytes) as usize;
+
+        let mut data = vec![0u8; length];
+        stream.read_exact(&mut data).await?;
 
         Ok(())
     }
