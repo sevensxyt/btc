@@ -127,7 +127,7 @@ impl Blockchain {
         Ok(())
     }
 
-    fn try_adjust_target(&mut self) {
+    pub fn try_adjust_target(&mut self) {
         // let N = block count interval to update difficulty
         // return early if N blocks have not passed
         if self.blocks.is_empty() {
