@@ -31,7 +31,7 @@ pub enum Message {
     // Request: Node should validate the template to prevent an invalid block from being mined
     ValidateTemplate(Block),
     // Response: Validity of the template
-    TemplateValidity(Block),
+    TemplateValidity(bool),
 
     // Request: Submit a mined block to the node
     SubmitTemplate(Block),
@@ -75,7 +75,7 @@ impl Message {
         Ok(())
     }
 
-    pub fn receive(&self, stream: &mut impl Read) -> Result<(), ciborium::de::Error<IoError>> {
+    pub fn receive(&self, stream: &mut impl Read) -> Result<Self, ciborium::de::Error<IoError>> {
         let mut length_bytes = [0u8; 8];
         stream.read_exact(&mut length_bytes)?;
         let length = u64::from_be_bytes(length_bytes) as usize;
@@ -83,7 +83,7 @@ impl Message {
         let mut data = vec![0u8; length];
         stream.read_exact(&mut data)?;
 
-        Ok(())
+        Self::decode(&data)
     }
 
     pub async fn send_async(
@@ -100,16 +100,14 @@ impl Message {
     }
 
     pub async fn receive_async(
-        &self,
         stream: &mut (impl AsyncRead + Unpin),
-    ) -> Result<(), ciborium::ser::Error<IoError>> {
+    ) -> Result<Self, ciborium::de::Error<IoError>> {
         let mut length_bytes = [0u8; 8];
         stream.read_exact(&mut length_bytes).await?;
         let length = u64::from_be_bytes(length_bytes) as usize;
 
         let mut data = vec![0u8; length];
         stream.read_exact(&mut data).await?;
-
-        Ok(())
+        Self::decode(&data)
     }
 }
